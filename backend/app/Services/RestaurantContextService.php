@@ -113,14 +113,9 @@ class RestaurantContextService
         try {
             $id = DB::table('reservations')->insertGetId([
                 'user_id' => $data['user_id'] ?? null,
-                'name' => $data['name'],
-                'email' => $data['email'] ?? null,
-                'phone' => $data['phone'] ?? null,
                 'date' => $data['date'],
                 'time' => $data['time'],
-                'guest_count' => $data['guest_count'],
-                'special_requests' => $data['special_requests'] ?? null,
-                'status' => 'confirmed',
+                'guest_count' => (int) $data['guest_count'],
                 'created_at' => now(),
                 'updated_at' => now(),
             ]);

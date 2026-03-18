@@ -3,7 +3,6 @@
 namespace App\Http\Controllers;
 
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Http;
 use App\Services\RestaurantContextService;
 
 class ChatController extends Controller
@@ -29,14 +28,15 @@ class ChatController extends Controller
         $userUpper = strtoupper($userMessage);
 
         // Confirmar reserva
-        if (preg_match('/^\s*(SI|YES|OK)\s*$/i', $userMessage) && isset($reservationData['ready'])) {
+        if (preg_match('/^\s*(SI|YES|OK|CONFIRMAR)\s*$/i', $userMessage) && !empty($reservationData)) {
             return response()->json($this->createReservation($reservationData, $request->input('user_id')));
         }
 
         // Cancelar
-        if (preg_match('/^\s*(NO|NOPE|CANCELAR)\s*$/i', $userMessage)) {
+        if (preg_match('/^\s*(NO|NOPE|CANCELAR|MODIFICAR)\s*$/i', $userMessage)) {
             return response()->json([
-                'response' => 'Reserva cancelada. ¿Querés iniciar otra? Decime la fecha, hora y cuántas personas.',
+                'response' => 'Entendido. Empecemos de nuevo.',
+                'reservation_created' => false,
                 'reservation_data' => []
             ]);
         }
@@ -55,15 +55,16 @@ class ChatController extends Controller
     {
         $message = strtolower(trim($message));
 
-        // Si ya tiene fecha, hora y personas, no extraer más
+        // Si ya tiene todo, no extraer más
         if (isset($data['date']) && isset($data['time']) && isset($data['guest_count'])) {
             return $data;
         }
 
         // Extraer fecha
         if (!isset($data['date'])) {
-            // Buscar fecha completa: DD/MM/AAAA o similar
-            if (preg_match('/(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})/', $message, $m)) {
+            if (preg_match('/(\d{4})-(\d{2})-(\d{2})/', $message, $m)) {
+                $data['date'] = "{$m[3]}/{$m[2]}/{$m[1]}";
+            } elseif (preg_match('/(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})/', $message, $m)) {
                 $day = $m[1];
                 $month = $m[2];
                 $year = strlen($m[3]) == 2 ? '20' . $m[3] : $m[3];
@@ -74,28 +75,16 @@ class ChatController extends Controller
         // Extraer hora
         if (!isset($data['time']) && preg_match('/(\d{1,2}):(\d{2})/', $message, $m)) {
             $data['time'] = sprintf("%02d:%02d", (int)$m[1], (int)$m[2]);
-        } elseif (!isset($data['time']) && preg_match('/^(\d{1,2})$/', trim($message), $m)) {
-            $data['pending_hour'] = (int)$m[1];
         }
 
         // Extraer personas
         if (!isset($data['guest_count'])) {
-            if (preg_match('/(\d+)\s*(?:personas?|comensales?)/i', $message, $m)) {
-                $count = (int)$m[1];
-                if ($count > 0 && $count <= 10) {
-                    $data['guest_count'] = $count;
-                }
-            } elseif (preg_match('/somos\s*(\d+)/i', $message, $m)) {
+            if (preg_match('/(\d+)/', $message, $m)) {
                 $count = (int)$m[1];
                 if ($count > 0 && $count <= 10) {
                     $data['guest_count'] = $count;
                 }
             }
-        }
-
-        // Verificar si está listo
-        if (isset($data['date']) && isset($data['time']) && isset($data['guest_count'])) {
-            $data['ready'] = true;
         }
 
         return $data;
@@ -104,61 +93,38 @@ class ChatController extends Controller
     private function generateResponse(array $data): array
     {
         $hasDate = isset($data['date']);
-        $hasTime = isset($data['time']) || isset($data['pending_hour']);
+        $hasTime = isset($data['time']);
         $hasPeople = isset($data['guest_count']);
 
-        // Si está todo listo
         if ($hasDate && $hasTime && $hasPeople) {
-            $time = $data['time'] ?? $data['pending_hour'] . ':00';
             return [
-                'message' => "Perfecto. Tu reserva:\n📅 Fecha: {$data['date']}\n🕐 Hora: $time\n👥 Personas: {$data['guest_count']}\n\n¿Confirmás? (SI o NO)"
+                'message' => "Perfecto. Tu reserva:\n📅 Fecha: {$data['date']}\n🕐 Hora: {$data['time']}\n👥 Personas: {$data['guest_count']}\n\n¿Confirmás?"
             ];
         }
 
-        // Si falta algo, preguntar en orden
-        if (!$hasDate) {
-            return [
-                'message' => '¿Para qué fecha querés reservar? (formato: DD/MM/AAAA, ejemplo: 21/03/2026)'
-            ];
-        }
-
-        if (!$hasTime) {
-            return [
-                'message' => '¿A qué hora? (formato 24hs, ejemplo: 23:00)'
-            ];
-        }
-
-        if (!$hasPeople) {
-            return [
-                'message' => '¿Para cuántas personas? (máximo 10)'
-            ];
-        }
-
-        return ['message' => '¿Querés hacer una reserva? Decime: fecha (DD/MM/AAAA), hora (HH:MM) y cuántas personas.'];
+        return ['message' => '¿Querés hacer una reserva?'];
     }
 
     private function createReservation(array $data, ?int $userId): array
     {
-        $time = $data['time'] ?? ($data['pending_hour'] ?? '20:00') . ':00';
-
-        if (empty($data['date']) || empty($time) || empty($data['guest_count'])) {
+        if (empty($data['date']) || empty($data['time']) || empty($data['guest_count'])) {
             return [
-                'response' => 'Faltan datos. Decime: fecha, hora y cuántas personas.',
+                'response' => 'Faltan datos para la reserva.',
+                'reservation_created' => false,
                 'reservation_data' => []
             ];
         }
 
         $result = $this->contextService->createReservation([
             'user_id' => $userId,
-            'name' => 'Usuario',
             'date' => $data['date'],
-            'time' => $time,
+            'time' => $data['time'],
             'guest_count' => (int) $data['guest_count'],
         ]);
 
         if ($result['success']) {
             return [
-                'response' => "✅ ¡Reserva confirmada! 🎉\n\n📋 Detalles:\n• Fecha: {$data['date']}\n• Hora: $time\n• Personas: {$data['guest_count']}\n\n¡Te esperamos en ReserBar! 🍽️\n\n¿Hay algo más?",
+                'response' => "✅ ¡Reserva confirmada! 🎉\n\n📋 Detalles:\n• Fecha: {$data['date']}\n• Hora: {$data['time']}\n• Personas: {$data['guest_count']}\n\n¡Te esperamos en ReserBar! 🍽️",
                 'reservation_created' => true,
                 'reservation_id' => $result['id'],
                 'reservation_data' => []
@@ -167,7 +133,8 @@ class ChatController extends Controller
 
         return [
             'response' => 'No se pudo crear la reserva. Intentá de nuevo.',
-            'reservation_data' => []
+            'reservation_created' => false,
+            'reservation_data' => $data
         ];
     }
 }

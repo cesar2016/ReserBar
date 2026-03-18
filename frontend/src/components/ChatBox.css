@@ -330,3 +330,115 @@
     right: 10px;
   }
 }
+
+/* Input areas for reservation flow */
+.chat-input-area {
+  padding: 12px;
+  background: #f0f0f0;
+  border-top: 1px solid #ddd;
+}
+
+.date-input {
+  width: 100%;
+  padding: 12px;
+  border-radius: 8px;
+  border: 2px solid #075E54;
+  font-size: 16px;
+  color: #333;
+  background: white;
+  cursor: pointer;
+}
+
+.date-input:focus {
+  outline: none;
+  border-color: #064c43;
+  box-shadow: 0 0 0 3px rgba(7, 94, 84, 0.2);
+}
+
+.options-grid {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 6px;
+  max-height: 150px;
+  overflow-y: auto;
+}
+
+.people-grid {
+  grid-template-columns: repeat(5, 1fr);
+}
+
+.option-btn {
+  padding: 10px 8px;
+  border-radius: 8px;
+  border: 1px solid #075E54;
+  background: white;
+  color: #075E54;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.option-btn:hover {
+  background: #075E54;
+  color: white;
+}
+
+.people-btn {
+  padding: 12px;
+  font-size: 16px;
+}
+
+.confirmation {
+  text-align: center;
+}
+
+.confirmation p {
+  margin: 0 0 10px 0;
+  font-weight: 600;
+  color: #333;
+}
+
+.confirm-buttons {
+  display: flex;
+  gap: 10px;
+  justify-content: center;
+}
+
+.confirm-btn {
+  padding: 10px 16px;
+  border-radius: 20px;
+  border: none;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.confirm-btn.yes {
+  background: #25D366;
+  color: white;
+}
+
+.confirm-btn.yes:hover {
+  background: #1da851;
+}
+
+.confirm-btn.no {
+  background: #dc3545;
+  color: white;
+}
+
+.confirm-btn.no:hover {
+  background: #c82333;
+}
+
+.quick-btn.primary {
+  background: #075E54;
+  color: white;
+  border-color: #075E54;
+}
+
+.quick-btn.primary:hover {
+  background: #064c43;
+}

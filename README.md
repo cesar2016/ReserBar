@@ -225,11 +225,10 @@ npx prisma studio
 
 | Vista | Descripción |
 |-------|-------------|
-| ![Login](images/Screenshot-25.png) | Pantalla de Login |
-| ![Dashboard](images/Screenshot-26.png) | Dashboard Principal |
-| ![Reservas](images/Screenshot-27.png) | Gestión de Reservas |
-| ![Mesas](images/Screenshot-28.png) | Estado de Mesas |
-| ![ChatBot](images/Screenshot-29.png) | Asistente Virtual IA |
+| ![Login](images/img_reserBar_1.png) | Pantalla de Login |
+| ![Dashboard](images/img_reserBar_2.png) | Dashboard Principal |
+| ![Reservas](images/img_reserBar_3.png) | Gestión de Reservas |
+| ![ChatBot](images/img_reserBar_4.png) | Asistente Virtual IA |
 
 ---
 

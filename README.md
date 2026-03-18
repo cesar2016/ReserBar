@@ -221,6 +221,18 @@ npx prisma studio
 
 ---
 
+## 📸 Capturas del Proyecto
+
+| Vista | Descripción |
+|-------|-------------|
+| ![Login](images/Screenshot-25.png) | Pantalla de Login |
+| ![Dashboard](images/Screenshot-26.png) | Dashboard Principal |
+| ![Reservas](images/Screenshot-27.png) | Gestión de Reservas |
+| ![Mesas](images/Screenshot-28.png) | Estado de Mesas |
+| ![ChatBot](images/Screenshot-29.png) | Asistente Virtual IA |
+
+---
+
 ## 👨‍💻 Desarrollador
 
 <p align="center">

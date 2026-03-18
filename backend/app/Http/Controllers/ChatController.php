@@ -27,175 +27,240 @@ class ChatController extends Controller
         $model = $request->input('model', 'llama-3.1-8b-instant');
         $userId = $request->input('user_id');
         $userMessage = trim($request->input('message'));
-        
         $reservationData = $request->input('reservation_data', []);
+        $currentStep = $reservationData['step'] ?? 'inicio';
 
         $userUpper = strtoupper($userMessage);
-        
-        if (preg_match('/^\s*(SI|SI\s*NO|OK|YES|SI, SI)\s*$/i', $userMessage) && !empty($reservationData)) {
+
+        // Confirmar reserva
+        if (preg_match('/^\s*(SI|YES|OK|SI,\s*SI|SII)\s*$/i', $userMessage) && isset($reservationData['ready'])) {
             return response()->json($this->createReservation($reservationData, $userId));
         }
-        
-        if (preg_match('/^\s*(NO|NOPE)\s*$/i', $userMessage)) {
+
+        // Cancelar o cambiar
+        if (preg_match('/^\s*(NO|NOPE|CAMBIAR|CORREGIR)\s*$/i', $userMessage)) {
             return response()->json([
-                'response' => 'Entendido. ¿Qué datos quieres cambiar?',
-                'reservation_data' => []
+                'response' => 'Entendido. ¿Qué dato querés cambiar?\n1️⃣ Fecha\n2️⃣ Hora\n3️⃣ Personas',
+                'reservation_data' => ['step' => 'cambiar']
             ]);
         }
 
-        $context = $this->contextService->getContext();
-        $restaurant = $context['restaurant'];
-        $tables = $context['tables'];
-        $availability = $context['availability'];
-
-        $tablesList = '';
-        foreach ($tables as $table) {
-            $tablesList .= "- {$table['nombre']}: capacidad {$table['capacidad']} personas, {$table['ubicacion']}\n";
-        }
-
-        $systemPrompt = <<<EOT
-Eres el asistente de "ReserBar", restaurante.
-
-REGLAS:
-- Solo habla del restaurante
-- Responde en español
-- Sé breve y directo
-
-HORARIOS DE RESERVA:
-- Lunes a Viernes: 10:00 a 24:00
-- Sábado: 22:00 a 02:00 (del domingo)
-- Domingo: 12:00 a 16:00
-
-RESPUESTAS PARA RESERVAS:
-1. Si el usuario quiere reservar Y da fecha, hora y personas → confirma con:
-   "Perfecto. Tengo tu reserva:
-   📅 Fecha: [DD/MM/AAAA]
-   🕐 Hora: [HH:MM]
-   👥 Personas: [N]
-   ¿Confirmas? SI o NO"
-
-2. Si falta algo → pregunta solo lo que falta
-
-3. Si dice SI → nosotros procesamos la reserva, tú solo confirma que fue exitosa
-
-4. Si dice NO → pregunta qué quiere cambiar
-
-5. Si la hora está fuera del horario de reserva → informa los horarios disponibles
-
-EJEMPLOS:
-- "quiero reservar para sabado 21 a las 23 para 9"
-→ "Perfecto. Tengo tu reserva:
-📅 Fecha: 21/03/2026
-🕐 Hora: 23:00
-👥 Personas: 9
-¿Confirmas? SI o NO"
-
-- "quiero reservar para lunes a las 8 de la mañana"
-→ "Lo sentimos, los horarios de reserva son:
-- Lunes a Viernes: 10:00 a 24:00
-- Sábado: 22:00 a 02:00
-- Domingo: 12:00 a 16:00"
-
-HORARIOS:
-- Lunes a Viernes: 10:00 a 24:00
-- Sábado: 22:00 a 02:00
-- Domingo: 12:00 a 16:00
-EOT;
-
-        try {
-            $response = Http::withHeaders([
-                'Authorization' => 'Bearer ' . $apiKey,
-                'Content-Type' => 'application/json',
-            ])->post('https://api.groq.com/openai/v1/chat/completions', [
-                'model' => $model,
-                'messages' => [
-                    ['role' => 'system', 'content' => $systemPrompt],
-                    ['role' => 'user', 'content' => $userMessage]
-                ],
-                'temperature' => 0.3,
-            ]);
-
-            if ($response->successful()) {
-                $data = $response->json();
-                $aiResponse = $data['choices'][0]['message']['content'] ?? 'Sin respuesta';
-                
-                $extractedData = $this->extractData($userMessage, $aiResponse);
-                
-                if (!empty($extractedData)) {
-                    $reservationData = array_merge($reservationData, $extractedData);
-                }
-                
-                return response()->json([
-                    'response' => $aiResponse,
-                    'reservation_data' => $reservationData
-                ]);
+        // Si dice que quiere cambiar un dato específico
+        if ($currentStep === 'cambiar') {
+            $reservationData['step'] = 'inicio';
+            $reservationData['ready'] = null;
+            if (stripos($userMessage, '1') !== false || stripos($userMessage, 'fecha') !== false) {
+                unset($reservationData['date']);
             }
-
-            return response()->json([
-                'error' => $response->json()['error']['message'] ?? 'Error en la API'
-            ], $response->status());
-
-        } catch (\Exception $e) {
-            return response()->json([
-                'error' => 'Error de conexión: ' . $e->getMessage()
-            ], 500);
+            if (stripos($userMessage, '2') !== false || stripos($userMessage, 'hora') !== false) {
+                unset($reservationData['time']);
+            }
+            if (stripos($userMessage, '3') !== false || stripos($userMessage, 'persona') !== false) {
+                unset($reservationData['guest_count']);
+            }
         }
+
+        // Extraer datos del mensaje del usuario
+        $extractedData = $this->extractData($userMessage);
+        $reservationData = array_merge($reservationData, $extractedData);
+
+        // Determinar siguiente paso
+        $response = $this->determineNextStep($reservationData, $userMessage);
+        
+        if ($response['done']) {
+            $reservationData['step'] = 'confirmar';
+            $reservationData['ready'] = true;
+        }
+
+        return response()->json([
+            'response' => $response['message'],
+            'reservation_data' => $reservationData
+        ]);
     }
 
-    private function extractData(string $userMessage, string $aiResponse): array
+    private function determineNextStep(array $data, string $userMessage): array
+    {
+        $hasDate = !empty($data['date']);
+        $hasTime = !empty($data['time']);
+        $hasPeople = !empty($data['guest_count']);
+
+        // Si ya tiene todo, mostrar resumen
+        if ($hasDate && $hasTime && $hasPeople) {
+            return [
+                'done' => true,
+                'message' => "Perfecto. Tu reserva:\n📅 Fecha: {$data['date']}\n🕐 Hora: {$data['time']}\n👥 Personas: {$data['guest_count']}\n\n¿Confirmás? (SI o NO)"
+            ];
+        }
+
+        // Si falta fecha
+        if (!$hasDate) {
+            if (isset($data['ambiguous'])) {
+                return [
+                    'done' => false,
+                    'message' => $data['ambiguous']
+                ];
+            }
+            return [
+                'done' => false,
+                'message' => '¿Para qué fecha querés reservar? (ej: 21/03/2026)'
+            ];
+        }
+
+        // Si falta hora
+        if (!$hasTime) {
+            if (isset($data['ambiguous'])) {
+                return [
+                    'done' => false,
+                    'message' => $data['ambiguous']
+                ];
+            }
+            return [
+                'done' => false,
+                'message' => '¿A qué hora querés venir? (ej: 23:00)'
+            ];
+        }
+
+        // Si falta personas
+        if (!$hasPeople) {
+            if (isset($data['ambiguous'])) {
+                return [
+                    'done' => false,
+                    'message' => $data['ambiguous']
+                ];
+            }
+            return [
+                'done' => false,
+                'message' => '¿Para cuántas personas?'
+            ];
+        }
+
+        return [
+            'done' => false,
+            'message' => '¿Querés hacer una reserva?'
+        ];
+    }
+
+    private function extractData(string $message): array
     {
         $data = [];
-        
-        $patterns = [
-            'date' => '/(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})/',
-            'date2' => '/(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})/',
-            'time' => '/(\d{1,2}):(\d{2})/',
-            'time2' => '/(\d{1,2})\s*(?:hs|:)?\s*(?:de\s*la\s*)?(?:mañana|tarde|noche)/i',
-            'people' => '/(\d+)\s*(?:personas?|comensales?|personas)/i',
-            'people2' => '/somos\s*(\d+)/i',
+        $message = trim($message);
+
+        // Detectar si quiere hacer reserva
+        if (preg_match('/(reserva|reservar|reservame|quiero\s+ir|quiero\s+ir\s+a\s+cenar|ir\s+a\s+cenar)/i', $message)) {
+            $data['wants_reservation'] = true;
+        }
+
+        // Extraer fecha
+        $datePatterns = [
+            '/(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})/',
+            '/(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})/',
         ];
-        
-        if (preg_match($patterns['date'], $userMessage, $m)) {
-            $day = $m[1];
-            $month = $m[2];
-            $year = strlen($m[3]) == 2 ? '20' . $m[3] : $m[3];
-            $data['date'] = "$day/$month/$year";
-        } elseif (preg_match($patterns['date2'], $userMessage, $m)) {
-            $year = $m[1];
-            $month = $m[2];
-            $day = $m[3];
-            $data['date'] = "$day/$month/$year";
+
+        foreach ($datePatterns as $pattern) {
+            if (preg_match($pattern, $message, $m)) {
+                if (count($m) === 4) {
+                    if (strlen($m[1]) === 4) {
+                        $day = $m[3];
+                        $month = $m[2];
+                        $year = $m[1];
+                    } else {
+                        $day = $m[1];
+                        $month = $m[2];
+                        $year = strlen($m[3]) == 2 ? '20' . $m[3] : $m[3];
+                    }
+                    $data['date'] = "$day/$month/$year";
+                    break;
+                }
+            }
         }
-        
-        if (preg_match('/(\d{1,2}):(\d{2})/', $userMessage, $m)) {
-            $data['time'] = sprintf("%02d:%02d", $m[1], $m[2]);
-        } elseif (preg_match('/(\d{1,2})\s*hs?/', $userMessage, $m)) {
-            $data['time'] = sprintf("%02d:00", $m[1]);
-        } elseif (preg_match('/(\d{1,2})\s*(?:de\s*la\s*)?(mañana|tarde|noche)/i', $userMessage, $m)) {
+
+        // Detectar día de la semana
+        $dayOfWeek = $this->detectDayOfWeek($message);
+        if ($dayOfWeek && !isset($data['date'])) {
+            $data['day_of_week'] = $dayOfWeek;
+            $data['ambiguous'] = "Perfecto. El próximo $dayOfWeek. ¿Qué fecha específica? (ej: 21/03)";
+        }
+
+        // Extraer hora
+        if (preg_match('/(\d{1,2}):(\d{2})/', $message, $m)) {
             $hour = (int)$m[1];
-            if ($m[2] === 'tarde' && $hour < 12) $hour += 12;
-            if ($m[2] === 'noche' && $hour < 12) $hour += 12;
-            if ($m[2] === 'mañana' && $hour === 12) $hour = 0;
+            $minute = $m[2];
+            if ($hour >= 0 && $hour <= 23 && $minute >= 0 && $minute <= 59) {
+                $data['time'] = sprintf("%02d:%02d", $hour, $minute);
+            }
+        } elseif (preg_match('/(\d{1,2})\s*hs?/', $message, $m)) {
+            $data['time'] = sprintf("%02d:00", (int)$m[1]);
+        } elseif (preg_match('/(\d{1,2})\s*(?:de\s*la\s*)?(mañana|tarde|noche)/i', $message, $m)) {
+            $hour = (int)$m[1];
+            $period = strtolower($m[2]);
+            
+            if ($period === 'mañana') {
+                $hour = $hour === 12 ? 0 : $hour;
+            } elseif ($period === 'tarde') {
+                $hour = $hour < 12 ? $hour + 12 : $hour;
+            } elseif ($period === 'noche') {
+                $hour = $hour < 12 ? $hour + 12 : $hour;
+            }
+            
             $data['time'] = sprintf("%02d:00", $hour);
+            $data['ambiguous'] = "{$m[1]} {$m[2]} = {$data['time']}. ¿Confirmás esta hora?";
+        } elseif (preg_match('/^(2[0-3]|[01]?[0-9])$/', trim($message), $m)) {
+            $hour = (int)$m[1];
+            $data['ambiguous'] = "¿$hour:00 o $hour:30?";
         }
-        
-        if (preg_match('/(\d+)\s*(?:personas?|comensales?)/i', $userMessage, $m)) {
+
+        // Extraer cantidad de personas
+        if (preg_match('/(\d+)\s*(?:personas?|comensales?|pax)/i', $message, $m)) {
+            $count = (int)$m[1];
+            if ($count > 0 && $count <= 20) {
+                $data['guest_count'] = $count;
+            }
+        } elseif (preg_match('/somos\s*(\d+)/i', $message, $m)) {
             $data['guest_count'] = (int)$m[1];
-        } elseif (preg_match('/somos\s*(\d+)/i', $userMessage, $m)) {
-            $data['guest_count'] = (int)$m[1];
-        } elseif (preg_match('/para\s*(\d+)/i', $userMessage, $m)) {
+        } elseif (preg_match('/(?:para|mesa\s*para)\s*(\d+)/i', $message, $m)) {
             $data['guest_count'] = (int)$m[1];
         }
-        
+
+        // Validar límite de personas
+        if (isset($data['guest_count']) && $data['guest_count'] > 10) {
+            $data['ambiguous'] = "El máximo es 10 personas por reserva. ¿Para cuántas personas querés?";
+            unset($data['guest_count']);
+        }
+
         return $data;
+    }
+
+    private function detectDayOfWeek(string $message): ?string
+    {
+        $days = [
+            'lunes' => 'lunes',
+            'martes' => 'martes',
+            'miercoles' => 'miércoles',
+            'miércoles' => 'miércoles',
+            'jueves' => 'jueves',
+            'viernes' => 'viernes',
+            'sabado' => 'sábado',
+            'sábado' => 'sábado',
+            'domingo' => 'domingo',
+            'hoy' => 'hoy',
+            'mañana' => 'mañana',
+        ];
+
+        foreach ($days as $key => $day) {
+            if (preg_match("/\\b$key\\b/i", $message)) {
+                return $day;
+            }
+        }
+
+        return null;
     }
 
     private function createReservation(array $data, ?int $userId): array
     {
         if (empty($data['date']) || empty($data['time']) || empty($data['guest_count'])) {
             return [
-                'error' => 'Faltan datos para la reserva',
-                'reservation_data' => $data
+                'response' => 'Faltan datos para la reserva. ¿Querés empezar de nuevo?',
+                'reservation_data' => ['step' => 'inicio']
             ];
         }
 
@@ -212,13 +277,13 @@ EOT;
                 'response' => "✅ ¡Reserva confirmada! 🎉\n\n📋 Detalles:\n• Fecha: {$data['date']}\n• Hora: {$data['time']}\n• Personas: {$data['guest_count']}\n\n¡Te esperamos en ReserBar! 🍽️\n\n¿Hay algo más en lo que pueda ayudarte?",
                 'reservation_created' => true,
                 'reservation_id' => $result['id'],
-                'reservation_data' => []
+                'reservation_data' => ['step' => 'completado']
             ];
         }
 
         return [
-            'error' => 'No se pudo crear la reserva: ' . $result['message'],
-            'reservation_data' => $data
+            'response' => 'No se pudo crear la reserva. Intentá de nuevo.',
+            'reservation_data' => ['step' => 'inicio']
         ];
     }
 }

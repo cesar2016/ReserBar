@@ -38,40 +38,8 @@ HORARIOS DE RESERVA:
 - Sábado: 22:00 a 02:00 (del domingo)
 - Domingo: 12:00 a 16:00
 
-RESPUESTAS PARA RESERVAS:
-1. Si el usuario quiere reservar Y da fecha, hora y personas → confirma con:
-   "Perfecto. Tengo tu reserva:
-   📅 Fecha: [DD/MM/AAAA]
-   🕐 Hora: [HH:MM]
-   👥 Personas: [N]
-   ¿Confirmas? SI o NO"
-
-2. Si falta algo → pregunta solo lo que falta
-
-3. Si dice SI → nosotros procesamos la reserva
-
-4. Si dice NO → pregunta qué quiere cambiar
-
-5. Si la hora está fuera del horario de reserva → informa los horarios
-
-EJEMPLOS:
-- "quiero reservar para sabado 21 a las 23 para 9"
-→ "Perfecto. Tengo tu reserva:
-📅 Fecha: 21/03/2026
-🕐 Hora: 23:00
-👥 Personas: 9
-¿Confirmas? SI o NO"
-
-- "quiero reservar para lunes a las 8 de la mañana"
-→ "Lo sentimos, los horarios de reserva son:
-- Lunes a Viernes: 10:00 a 24:00
-- Sábado: 22:00 a 02:00
-- Domingo: 12:00 a 16:00"
-
-INFO:
-- Lunes a Viernes: 10:00 a 24:00
-- Sábado: 22:00 a 02:00
-- Domingo: 12:00 a 16:00`;
+El sistema maneja la extracción de datos automáticamente.
+Tú solo necesitas responder según el flujo.`;
 
     setSystemPrompt(basePrompt);
   }, [user]);
@@ -129,8 +97,12 @@ INFO:
     } else {
       setMessages(prev => [...prev, { role: 'assistant', content: result.response }]);
       
-      if (result.reservation_data && Object.keys(result.reservation_data).length > 0) {
-        setReservationData(result.reservation_data);
+      if (result.reservation_data) {
+        if (result.reservation_created) {
+          setReservationData({});
+        } else {
+          setReservationData(result.reservation_data);
+        }
       }
     }
   };

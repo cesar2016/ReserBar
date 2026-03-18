@@ -252,12 +252,6 @@ npx prisma studio
 
 ---
 
-## 📝 Licencia
-
-Este proyecto está bajo la Licencia MIT - ver el archivo [LICENSE](LICENSE) para más detalles.
-
----
-
 <p align="center">
   <strong>Hecho con ❤️ y ☕ por Cesar R. Sanchez</strong>
   <br>

@@ -5,17 +5,27 @@ namespace App\Http\Controllers;
 use Illuminate\Http\Request;
 use App\Services\RestaurantContextService;
 use App\Services\MenuService;
+use App\Services\IntentEmbeddingService;
+use App\Services\ConversationContextService;
 use Carbon\Carbon;
 
 class ChatController extends Controller
 {
     private RestaurantContextService $contextService;
     private MenuService $menuService;
+    private IntentEmbeddingService $intentService;
+    private ConversationContextService $conversationService;
 
-    public function __construct(RestaurantContextService $contextService, MenuService $menuService)
-    {
+    public function __construct(
+        RestaurantContextService $contextService,
+        MenuService $menuService,
+        IntentEmbeddingService $intentService,
+        ConversationContextService $conversationService
+    ) {
         $this->contextService = $contextService;
         $this->menuService = $menuService;
+        $this->intentService = $intentService;
+        $this->conversationService = $conversationService;
     }
 
     public function chat(Request $request)
@@ -24,200 +34,238 @@ class ChatController extends Controller
             'message' => 'required|string',
             'model' => 'nullable|string',
             'user_id' => 'nullable|integer',
+            'session_id' => 'nullable|string',
         ]);
 
         $userMessage = trim($request->input('message'));
-        $reservationData = $request->input('reservation_data', []);
-
+        $userId = $request->input('user_id');
+        $sessionId = $request->input('session_id') ?? $this->conversationService->getOrCreateSession($userId);
+        
         $userUpper = strtoupper($userMessage);
-        $userLower = strtolower($userMessage);
-
-        if (isset($reservationData['ready']) && $reservationData['ready']) {
-            return response()->json($this->createReservation($reservationData, $request->input('user_id')));
+        
+        if (preg_match('/^\s*(SI|YES|OK|CONFIRMAR|AFIRMATIVO)\s*$/i', $userMessage)) {
+            return $this->handleConfirmation($userId, $sessionId);
         }
-
-        if (preg_match('/^\s*(SI|YES|OK|CONFIRMAR)\s*$/i', $userMessage) && !empty($reservationData)) {
-            return response()->json($this->createReservation($reservationData, $request->input('user_id')));
-        }
-
+        
         if (preg_match('/^\s*(NO|NOPE|CANCELAR|MODIFICAR)\s*$/i', $userMessage)) {
-            return response()->json([
-                'response' => 'Entendido. Empecemos de nuevo.',
-                'reservation_created' => false,
-                'reservation_data' => []
-            ]);
+            return $this->handleCancellation($userId, $sessionId);
         }
 
-        if ($this->isMenuQuery($userLower)) {
-            return response()->json($this->handleMenuQuery($userLower, $userMessage));
-        }
-
-        $extractedData = $this->extractAndProcess($userMessage, $reservationData);
-        $response = $this->generateResponse($extractedData);
-
+        $result = $this->conversationService->processMessage($userMessage, $userId, $sessionId);
+        $context = $result['context'];
+        $intent = $result['intent'];
+        $entities = $result['entities'];
+        
+        $response = $this->generateResponse($userMessage, $context, $intent, $entities, $userId, $sessionId);
+        
+        $this->conversationService->addToHistory($userId, $sessionId, 'user', $userMessage);
+        $this->conversationService->addToHistory($userId, $sessionId, 'assistant', $response['message']);
+        
+        $this->intentService->saveConversation(
+            $userId,
+            $userMessage,
+            $response['message'],
+            $intent,
+            $entities,
+            $context['intent_confidence'] ?? 0.5,
+            $sessionId
+        );
+        
         return response()->json([
             'response' => $response['message'],
-            'reservation_data' => $extractedData
+            'intent' => $intent?->name,
+            'entities' => $context['entities'],
+            'session_id' => $sessionId,
+            'ready' => $this->conversationService->isReadyForConfirmation($context),
         ]);
     }
 
-    private function isMenuQuery(string $message): bool
+    private function handleConfirmation(?int $userId, string $sessionId): \Illuminate\Http\JsonResponse
     {
-        $menuPatterns = [
-            'menu', 'carta', 'comida', 'platos', 'comprar', 'pedir',
-            'comer', 'almorzar', 'cenar', 'desayunar',
-            'bebida', 'postre', 'cerveza', 'vino', 'gaseosa',
-            'pollo', 'carne', 'pasta', 'pizza', 'hamburguesa',
-            'milanesa', 'ensalada', 'sopa', 'mariscos', 'pescado',
-            'vegetariano', 'vegano', 'sin tacc', 'celíaco',
-            'recomendame', 'recomendar', 'qué me sugerís', 'sugerir',
-            'menú del día', 'menú del dia', 'especial', 'ofertas',
-        ];
-
-        foreach ($menuPatterns as $pattern) {
-            if (strpos($message, $pattern) !== false) {
-                return true;
-            }
+        $context = $this->conversationService->getContext($userId, $sessionId);
+        
+        if (!$this->conversationService->isReadyForConfirmation($context)) {
+            return response()->json([
+                'response' => 'No tengo todos los datos necesarios para confirmar. ¿Querés empezar de nuevo?',
+                'intent' => $context['intent'],
+                'entities' => $context['entities'],
+                'session_id' => $sessionId,
+                'ready' => false,
+            ]);
         }
-
-        return false;
+        
+        $entities = $context['entities'];
+        
+        $result = $this->contextService->createReservation([
+            'user_id' => $userId,
+            'date' => $entities['date'],
+            'time' => $entities['time'],
+            'guest_count' => (int) $entities['guest_count'],
+        ]);
+        
+        if ($result['success']) {
+            $this->conversationService->clearContext($userId, $sessionId);
+            
+            return response()->json([
+                'response' => "✅ ¡Reserva confirmada! 🎉\n\n📋 Detalles:\n• Fecha: {$this->formatDateForDisplay($entities['date'])}\n• Hora: {$entities['time']}\n• Personas: {$entities['guest_count']}\n• Mesa: {$result['tables']}\n\n¡Te esperamos en ReserBar! 🍽️",
+                'intent' => 'make_reservation',
+                'entities' => [],
+                'session_id' => $sessionId,
+                'ready' => false,
+                'reservation_created' => true,
+            ]);
+        }
+        
+        return response()->json([
+            'response' => "❌ No se pudo crear la reserva.\n\n{$result['message']}\n\n¿Querés intentar con otro horario o fecha?",
+            'intent' => 'make_reservation',
+            'entities' => $context['entities'],
+            'session_id' => $sessionId,
+            'ready' => false,
+        ]);
     }
 
-    private function handleMenuQuery(string $message, string $originalMessage): array
+    private function handleCancellation(?int $userId, string $sessionId): \Illuminate\Http\JsonResponse
     {
-        $dayOfWeek = strtolower(now()->dayName);
+        $this->conversationService->clearContext($userId, $sessionId);
+        
+        return response()->json([
+            'response' => 'Entendido. Empecemos de nuevo. 😊\n\n¿En qué puedo ayudarte?',
+            'intent' => null,
+            'entities' => [],
+            'session_id' => $sessionId,
+            'ready' => false,
+        ]);
+    }
 
-        if (strpos($message, 'menú del día') !== false || strpos($message, 'menu del dia') !== false || strpos($message, 'especial') !== false) {
-            $menuDelDia = $this->menuService->getMenuOfTheDay();
-            
-            if (empty($menuDelDia)) {
-                return [
-                    'response' => "Hoy no hay menú del día especial. 😊\n\n¿Querés ver el menú completo?",
-                    'menu_data' => null
-                ];
-            }
-
-            $items = array_map(function($item) {
-                return "🍽️ {$item['name']}\n   {$item['description']}\n   💰 {$item['formatted_price']}";
-            }, $menuDelDia);
-
+    private function generateResponse(
+        string $message,
+        array $context,
+        $intent,
+        array $entities,
+        ?int $userId,
+        string $sessionId
+    ): array {
+        $step = $context['step'];
+        
+        if ($intent && $intent->name === 'greeting') {
             return [
-                'response' => "🍽️ Menú del Día ({$dayOfWeek}):\n\n" . implode("\n\n", $items) . "\n\n¿Querés hacer una reserva para venir a probar algo? 😊",
-                'menu_data' => $menuDelDia
+                'message' => "¡Hola! 👋 Soy el asistente de ReserBar.\n\nPuedo ayudarte a:\n📅 Hacer una reserva\n🍽️ Ver nuestro menú\n🕐 Conocer los horarios\n📍 Ubicación del restaurante\n\n¿En qué puedo ayudarte?",
             ];
         }
-
-        if (preg_match('/(recomendame|recomendar|qué me|que me|sugerir)/i', $message)) {
-            $results = $this->menuService->searchMenu($originalMessage, 3);
-            
-            if (empty($results)) {
-                return [
-                    'response' => "No encontré recomendaciones exactas. 😊 Dejame mostrarte nuestro menú completo:\n\n" . $this->getFullMenuList(),
-                ];
-            }
-
-            $items = array_map(function($item) {
-                return "🍽️ {$item['name']}\n   {$item['description']}\n   💰 {$item['formatted_price']} ({$item['category']})";
-            }, $results);
-
+        
+        if ($intent && $intent->name === 'menu_query') {
+            return $this->handleMenuQuery($context, $sessionId);
+        }
+        
+        if ($intent && $intent->name === 'make_reservation') {
+            return $this->handleReservationFlow($context, $sessionId);
+        }
+        
+        if ($intent && $intent->name === 'cancel_reservation') {
             return [
-                'response' => "✨ Te recomiendo:\n\n" . implode("\n\n", $items) . "\n\n¿Te gustaría reservar una mesa? 📅",
-                'menu_data' => $results
+                'message' => 'Para cancelar una reserva necesito saber cuál es. ¿Podrías darme el número de confirmación o la fecha de tu reserva?',
             ];
         }
-
-        $results = $this->menuService->searchMenu($originalMessage, 5);
-
-        if (empty($results)) {
-            return [
-                'response' => "No encontré platos que coincidan con tu búsqueda. 😊\n\n" . $this->getFullMenuList(),
-                'menu_data' => null
-            ];
+        
+        if ($intent && $intent->name === 'query_reservation') {
+            return $this->handleQueryReservations($userId);
         }
-
-        $items = array_map(function($item) {
-            return "{$item['category_icon']} {$item['name']} - {$item['formatted_price']}";
-        }, $results);
-
+        
+        $missing = $this->conversationService->getMissingEntities($context);
+        if (!empty($missing)) {
+            return $this->askForMissingEntity($context, $missing[0]);
+        }
+        
         return [
-            'response' => "Encontré estos platos:\n\n" . implode("\n", $items) . "\n\n¿Querés más información sobre alguno o hacer una reserva? 😊",
-            'menu_data' => $results
+            'message' => "No estoy seguro de entender. 😊\n\n¿Querés hacer una reserva? Decime:\n📅 ¿Para qué fecha?\n🕐 ¿A qué hora?\n👥 ¿Cuántas personas?",
         ];
     }
 
-    private function getFullMenuList(): string
+    private function handleMenuQuery(array $context, string $sessionId): array
     {
         $menu = $this->menuService->getFullMenu();
-        $text = "📋 Nuestro menú:\n\n";
-
+        
+        if (empty($menu)) {
+            return ['message' => 'Por el momento no tenemos menú disponible. 😊'];
+        }
+        
+        $menuText = "📋 Nuestra Carta:\n\n";
+        
         foreach ($menu as $category) {
-            $text .= "{$category['icon']} {$category['name']}:\n";
-            foreach ($category['items'] as $item) {
-                $text .= "   • {$item['name']} - {$item['formatted_price']}\n";
+            $menuText .= "{$category['icon']} {$category['name']}:\n";
+            foreach (array_slice($category['items'], 0, 4) as $item) {
+                $menuText .= "   • {$item['name']} - {$item['formatted_price']}\n";
             }
-            $text .= "\n";
+            if (count($category['items']) > 4) {
+                $menuText .= "   ... y " . (count($category['items']) - 4) . " más\n";
+            }
+            $menuText .= "\n";
         }
-
-        return $text . "¿Te interesa algo en particular? 😊";
+        
+        $menuText .= "¿Querés que te recomiende algo o hacés una reserva? 😊";
+        
+        return ['message' => $menuText];
     }
 
-    private function extractAndProcess(string $message, array $data): array
+    private function handleReservationFlow(array $context, string $sessionId): array
     {
-        $message = strtolower(trim($message));
-
-        if (isset($data['date']) && isset($data['time']) && isset($data['guest_count'])) {
-            return $data;
-        }
-
-        if (!isset($data['date'])) {
-            if (preg_match('/(\d{4})-(\d{2})-(\d{2})/', $message, $m)) {
-                $data['date'] = "{$m[1]}-{$m[2]}-{$m[3]}";
-            } elseif (preg_match('/(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})/', $message, $m)) {
-                $day = str_pad($m[1], 2, '0', STR_PAD_LEFT);
-                $month = str_pad($m[2], 2, '0', STR_PAD_LEFT);
-                $year = strlen($m[3]) == 2 ? '20' . $m[3] : $m[3];
-                $data['date'] = "$year-$month-$day";
-                $data['dateDisplay'] = "$day/$month/$year";
-            }
-        }
-
-        if (!isset($data['time']) && preg_match('/(\d{1,2}):(\d{2})/', $message, $m)) {
-            $data['time'] = sprintf("%02d:%02d", (int)$m[1], (int)$m[2]);
-        }
-
-        if (!isset($data['guest_count'])) {
-            if (preg_match('/(\d+)/', $message, $m)) {
-                $count = (int)$m[1];
-                if ($count > 0 && $count <= 8) {
-                    $data['guest_count'] = $count;
-                }
-            }
-        }
-
-        return $data;
-    }
-
-    private function generateResponse(array $data): array
-    {
-        $hasDate = isset($data['date']);
-        $hasTime = isset($data['time']);
-        $hasPeople = isset($data['guest_count']);
-
-        if ($hasDate && $hasTime && $hasPeople) {
-            $dateDisplay = $data['dateDisplay'] ?? $this->formatDateForDisplay($data['date']);
+        if ($this->conversationService->isReadyForConfirmation($context)) {
+            $entities = $context['entities'];
+            $dateDisplay = $this->formatDateForDisplay($entities['date']);
+            
             return [
-                'message' => "Perfecto. Tu reserva:\n📅 Fecha: {$dateDisplay}\n🕐 Hora: {$data['time']}\n👥 Personas: {$data['guest_count']}\n\n¿Confirmás? (Responde SI o NO)"
+                'message' => "Perfecto. Tu reserva:\n📅 {$dateDisplay}\n🕐 {$entities['time']}\n👥 {$entities['guest_count']} personas\n\n¿Confirmás? (Responde SI o NO)"
             ];
         }
+        
+        $missing = $this->conversationService->getMissingEntities($context);
+        
+        if (in_array('date', $missing)) {
+            return ['message' => "📅 ¿Para qué fecha querés hacer la reserva?"];
+        }
+        
+        if (in_array('time', $missing)) {
+            return ['message' => "🕐 ¿A qué hora querés reservar?\n(Lunes a Viernes: 10:00 a 00:00)"];
+        }
+        
+        if (in_array('guest_count', $missing)) {
+            return ['message' => "👥 ¿Para cuántas personas?\n(Mínimo 1 - Máximo 8)"];
+        }
+        
+        return ['message' => "¿Querés hacer una reserva? 😊"];
+    }
 
-        $missing = [];
-        if (!$hasDate) $missing[] = '📅 fecha';
-        if (!$hasTime) $missing[] = '🕐 hora';
-        if (!$hasPeople) $missing[] = '👥 cantidad de personas';
-
-        return [
-            'message' => "Para hacer la reserva necesito:\n" . implode("\n", $missing) . "\n\n¿Querés hacer una reserva?"
+    private function askForMissingEntity(array $context, string $missing): array
+    {
+        $messages = [
+            'date' => "📅 ¿Para qué fecha? (Ej: 26 de marzo, mañana, próximo viernes)",
+            'time' => "🕐 ¿A qué hora? (Ej: 21:00, 9pm)",
+            'guest_count' => "👥 ¿Para cuántas personas? (1 a 8)",
         ];
+        
+        return ['message' => $messages[$missing] ?? "Necesito más información."];
+    }
+
+    private function handleQueryReservations(?int $userId): array
+    {
+        if (!$userId) {
+            return ['message' => 'Necesitas estar logueado para ver tus reservas. 😊'];
+        }
+        
+        $reservations = $this->contextService->getReservationsByUser($userId);
+        
+        if (empty($reservations)) {
+            return ['message' => 'No tenés reservas pendientes. 😊\n\n¿Querés hacer una nueva reserva?'];
+        }
+        
+        $text = "📋 Tus reservas:\n\n";
+        foreach ($reservations as $res) {
+            $text .= "• {$this->formatDateForDisplay($res->date)} a las {$res->time}\n";
+            $text .= "  {$res->guest_count} personas\n\n";
+        }
+        
+        return ['message' => $text . "¿Querés hacer algo más?"];
     }
 
     private function formatDateForDisplay(string $date): string
@@ -226,40 +274,5 @@ class ChatController extends Controller
             return "{$m[3]}/{$m[2]}/{$m[1]}";
         }
         return $date;
-    }
-
-    private function createReservation(array $data, ?int $userId): array
-    {
-        if (empty($data['date']) || empty($data['time']) || empty($data['guest_count'])) {
-            return [
-                'response' => '❌ Faltan datos para la reserva.',
-                'reservation_created' => false,
-                'reservation_data' => []
-            ];
-        }
-
-        $result = $this->contextService->createReservation([
-            'user_id' => $userId,
-            'date' => $data['date'],
-            'time' => $data['time'],
-            'guest_count' => (int) $data['guest_count'],
-        ]);
-
-        $dateDisplay = $this->formatDateForDisplay($data['date']);
-
-        if ($result['success']) {
-            return [
-                'response' => "✅ ¡Reserva confirmada! 🎉\n\n📋 Detalles:\n• Fecha: {$dateDisplay}\n• Hora: {$data['time']}\n• Personas: {$data['guest_count']}\n• Mesa: {$result['tables']}\n\n¡Te esperamos en ReserBar! 🍽️",
-                'reservation_created' => true,
-                'reservation_id' => $result['id'],
-                'reservation_data' => []
-            ];
-        }
-
-        return [
-            'response' => "❌ No se pudo crear la reserva.\n\n{$result['message']}\n\n¿Querés intentar con otro horario o fecha?",
-            'reservation_created' => false,
-            'reservation_data' => $data
-        ];
     }
 }

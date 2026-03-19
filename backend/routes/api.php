@@ -2,6 +2,7 @@
 
 use App\Http\Controllers\AuthController;
 use App\Http\Controllers\ChatController;
+use App\Http\Controllers\MenuController;
 use App\Http\Controllers\ReservationController;
 use App\Http\Controllers\TableController;
 use App\Services\RestaurantContextService;
@@ -19,6 +20,13 @@ Route::post('/chat', [ChatController::class, 'chat']);
 Route::get('/restaurant/context', function() {
     return response()->json(app(RestaurantContextService::class)->getContext());
 });
+
+Route::get('/menu', [MenuController::class, 'index']);
+Route::get('/menu/of-the-day', [MenuController::class, 'ofTheDay']);
+Route::get('/menu/search', [MenuController::class, 'search']);
+Route::get('/menu/category/{categoryId}', [MenuController::class, 'byCategory']);
+Route::get('/menu/{id}', [MenuController::class, 'show']);
+
 Route::post('/chat/reservation', function(Request $request) {
     $service = app(RestaurantContextService::class);
     return response()->json($service->createReservation($request->all()));
@@ -39,4 +47,6 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/tables/{table}', [TableController::class, 'show']);
     Route::put('/tables/{table}', [TableController::class, 'update']);
     Route::delete('/tables/{table}', [TableController::class, 'destroy']);
+    
+    Route::post('/menu/rebuild-embeddings', [MenuController::class, 'rebuildEmbeddings']);
 });

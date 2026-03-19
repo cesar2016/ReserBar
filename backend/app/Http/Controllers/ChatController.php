@@ -4,15 +4,18 @@ namespace App\Http\Controllers;
 
 use Illuminate\Http\Request;
 use App\Services\RestaurantContextService;
+use App\Services\MenuService;
 use Carbon\Carbon;
 
 class ChatController extends Controller
 {
     private RestaurantContextService $contextService;
+    private MenuService $menuService;
 
-    public function __construct(RestaurantContextService $contextService)
+    public function __construct(RestaurantContextService $contextService, MenuService $menuService)
     {
         $this->contextService = $contextService;
+        $this->menuService = $menuService;
     }
 
     public function chat(Request $request)
@@ -27,6 +30,7 @@ class ChatController extends Controller
         $reservationData = $request->input('reservation_data', []);
 
         $userUpper = strtoupper($userMessage);
+        $userLower = strtolower($userMessage);
 
         if (isset($reservationData['ready']) && $reservationData['ready']) {
             return response()->json($this->createReservation($reservationData, $request->input('user_id')));
@@ -44,6 +48,10 @@ class ChatController extends Controller
             ]);
         }
 
+        if ($this->isMenuQuery($userLower)) {
+            return response()->json($this->handleMenuQuery($userLower, $userMessage));
+        }
+
         $extractedData = $this->extractAndProcess($userMessage, $reservationData);
         $response = $this->generateResponse($extractedData);
 
@@ -51,6 +59,106 @@ class ChatController extends Controller
             'response' => $response['message'],
             'reservation_data' => $extractedData
         ]);
+    }
+
+    private function isMenuQuery(string $message): bool
+    {
+        $menuPatterns = [
+            'menu', 'carta', 'comida', 'platos', 'comprar', 'pedir',
+            'comer', 'almorzar', 'cenar', 'desayunar',
+            'bebida', 'postre', 'cerveza', 'vino', 'gaseosa',
+            'pollo', 'carne', 'pasta', 'pizza', 'hamburguesa',
+            'milanesa', 'ensalada', 'sopa', 'mariscos', 'pescado',
+            'vegetariano', 'vegano', 'sin tacc', 'celíaco',
+            'recomendame', 'recomendar', 'qué me sugerís', 'sugerir',
+            'menú del día', 'menú del dia', 'especial', 'ofertas',
+        ];
+
+        foreach ($menuPatterns as $pattern) {
+            if (strpos($message, $pattern) !== false) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function handleMenuQuery(string $message, string $originalMessage): array
+    {
+        $dayOfWeek = strtolower(now()->dayName);
+
+        if (strpos($message, 'menú del día') !== false || strpos($message, 'menu del dia') !== false || strpos($message, 'especial') !== false) {
+            $menuDelDia = $this->menuService->getMenuOfTheDay();
+            
+            if (empty($menuDelDia)) {
+                return [
+                    'response' => "Hoy no hay menú del día especial. 😊\n\n¿Querés ver el menú completo?",
+                    'menu_data' => null
+                ];
+            }
+
+            $items = array_map(function($item) {
+                return "🍽️ {$item['name']}\n   {$item['description']}\n   💰 {$item['formatted_price']}";
+            }, $menuDelDia);
+
+            return [
+                'response' => "🍽️ Menú del Día ({$dayOfWeek}):\n\n" . implode("\n\n", $items) . "\n\n¿Querés hacer una reserva para venir a probar algo? 😊",
+                'menu_data' => $menuDelDia
+            ];
+        }
+
+        if (preg_match('/(recomendame|recomendar|qué me|que me|sugerir)/i', $message)) {
+            $results = $this->menuService->searchMenu($originalMessage, 3);
+            
+            if (empty($results)) {
+                return [
+                    'response' => "No encontré recomendaciones exactas. 😊 Dejame mostrarte nuestro menú completo:\n\n" . $this->getFullMenuList(),
+                ];
+            }
+
+            $items = array_map(function($item) {
+                return "🍽️ {$item['name']}\n   {$item['description']}\n   💰 {$item['formatted_price']} ({$item['category']})";
+            }, $results);
+
+            return [
+                'response' => "✨ Te recomiendo:\n\n" . implode("\n\n", $items) . "\n\n¿Te gustaría reservar una mesa? 📅",
+                'menu_data' => $results
+            ];
+        }
+
+        $results = $this->menuService->searchMenu($originalMessage, 5);
+
+        if (empty($results)) {
+            return [
+                'response' => "No encontré platos que coincidan con tu búsqueda. 😊\n\n" . $this->getFullMenuList(),
+                'menu_data' => null
+            ];
+        }
+
+        $items = array_map(function($item) {
+            return "{$item['category_icon']} {$item['name']} - {$item['formatted_price']}";
+        }, $results);
+
+        return [
+            'response' => "Encontré estos platos:\n\n" . implode("\n", $items) . "\n\n¿Querés más información sobre alguno o hacer una reserva? 😊",
+            'menu_data' => $results
+        ];
+    }
+
+    private function getFullMenuList(): string
+    {
+        $menu = $this->menuService->getFullMenu();
+        $text = "📋 Nuestro menú:\n\n";
+
+        foreach ($menu as $category) {
+            $text .= "{$category['icon']} {$category['name']}:\n";
+            foreach ($category['items'] as $item) {
+                $text .= "   • {$item['name']} - {$item['formatted_price']}\n";
+            }
+            $text .= "\n";
+        }
+
+        return $text . "¿Te interesa algo en particular? 😊";
     }
 
     private function extractAndProcess(string $message, array $data): array

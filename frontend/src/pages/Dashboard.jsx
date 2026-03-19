@@ -13,6 +13,7 @@ const Dashboard = () => {
     const [activeTab, setActiveTab] = useState('reservations');
     const [reservations, setReservations] = useState([]);
     const [tables, setTables] = useState([]);
+    const [menu, setMenu] = useState([]);
     const [loading, setLoading] = useState(true);
 
     // Reservation Form State
@@ -50,14 +51,15 @@ const Dashboard = () => {
             const token = localStorage.getItem('token');
             const config = { headers: { Authorization: `Bearer ${token}` } };
             
-            // Fetch ALL reservations
-            const [reservationsRes, tablesRes] = await Promise.all([
+            const [reservationsRes, tablesRes, menuRes] = await Promise.all([
                 axios.get(`${API_URL}/api/reservations`, config),
-                axios.get(`${API_URL}/api/tables`, config)
+                axios.get(`${API_URL}/api/tables`, config),
+                axios.get(`${API_URL}/api/menu`)
             ]);
 
             setReservations(reservationsRes.data);
             setTables(tablesRes.data);
+            setMenu(menuRes.data.data || []);
         } catch (error) {
             console.error(error);
             toast.error('Error al cargar datos');
@@ -213,7 +215,7 @@ const Dashboard = () => {
 
             <main style={{ padding: '2rem', maxWidth: '1200px', margin: '0 auto' }}>
                 {/* Tabs */}
-                <div style={{ display: 'flex', gap: '1rem', marginBottom: '2rem', overflowX: 'auto', paddingBottom: '0.5rem' }}>
+                <div style={{ display: 'flex', gap: '1rem', marginBottom: '2rem', overflowX: 'auto', paddingBottom: '0.5rem', flexWrap: 'wrap' }}>
                     <button 
                         onClick={() => setActiveTab('reservations')}
                         className={`btn ${activeTab === 'reservations' ? 'btn-primary' : 'btn-outline'}`}
@@ -227,6 +229,13 @@ const Dashboard = () => {
                         style={{ borderRadius: '12px', whiteSpace: 'nowrap' }}
                     >
                         <MapPin size={18} /> Mesas
+                    </button>
+                    <button 
+                        onClick={() => setActiveTab('menu')}
+                        className={`btn ${activeTab === 'menu' ? 'btn-primary' : 'btn-outline'}`}
+                        style={{ borderRadius: '12px', whiteSpace: 'nowrap' }}
+                    >
+                        <ChefHat size={18} /> Carta
                     </button>
                 </div>
 
@@ -360,6 +369,69 @@ const Dashboard = () => {
                                             </div>
                                         );
                                     })}
+                                </div>
+                            </div>
+                        )}
+
+                        {/* Menu Tab */}
+                        {activeTab === 'menu' && (
+                            <div>
+                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem' }}>
+                                    <h3 style={{ fontSize: '1.25rem', fontWeight: '700', color: '#111827' }}>Nuestra Carta</h3>
+                                </div>
+
+                                <div style={{ display: 'grid', gap: '2rem' }}>
+                                    {menu.map(category => (
+                                        <div key={category.id} style={{
+                                            background: 'white',
+                                            borderRadius: '16px',
+                                            padding: '1.5rem',
+                                            border: '1px solid #e5e7eb'
+                                        }}>
+                                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '1rem' }}>
+                                                <span style={{ fontSize: '1.5rem' }}>{category.icon}</span>
+                                                <h4 style={{ fontSize: '1.1rem', fontWeight: '700', margin: 0 }}>{category.name}</h4>
+                                            </div>
+                                            
+                                            <div style={{ display: 'grid', gap: '0.75rem' }}>
+                                                {category.items.map(item => (
+                                                    <div key={item.id} style={{
+                                                        display: 'flex',
+                                                        justifyContent: 'space-between',
+                                                        alignItems: 'flex-start',
+                                                        padding: '0.75rem',
+                                                        background: '#f9fafb',
+                                                        borderRadius: '8px'
+                                                    }}>
+                                                        <div style={{ flex: 1 }}>
+                                                                <span style={{ fontWeight: '600', color: '#111827' }}>{item.name}</span>
+                                                                {item.description && (
+                                                                    <p style={{ margin: '0.25rem 0 0 0', fontSize: '0.85rem', color: '#6b7280' }}>
+                                                                        {item.description}
+                                                                    </p>
+                                                                )}
+                                                        </div>
+                                                        <span style={{
+                                                            fontWeight: '700',
+                                                            color: '#059669',
+                                                            background: '#ecfdf5',
+                                                            padding: '0.25rem 0.75rem',
+                                                            borderRadius: '6px',
+                                                            fontSize: '0.9rem',
+                                                            whiteSpace: 'nowrap'
+                                                        }}>
+                                                            {item.formatted_price}
+                                                        </span>
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        </div>
+                                    ))}
+                                    {menu.length === 0 && (
+                                        <p style={{ textAlign: 'center', color: '#9ca3af', padding: '3rem', background: '#f9fafb', borderRadius: '16px' }}>
+                                            No hay items en el menú.
+                                        </p>
+                                    )}
                                 </div>
                             </div>
                         )}

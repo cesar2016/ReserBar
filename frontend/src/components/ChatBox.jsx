@@ -264,6 +264,36 @@ export default function ChatBox() {
       await delay(800);
       hideTypingIndicator();
       addMessage('assistant', 'Para consultar disponibilidad necesito saber:\n\n📅 ¿Para qué fecha?\n🕐 ¿A qué hora?\n👥 ¿Cuántas personas?\n\n¿Querés hacer una reserva? 😊');
+    } else if (action === 'menu') {
+      addMessage('user', '🍽️ Quiero ver el menú');
+      showTypingIndicator();
+      
+      try {
+        const response = await fetch(`${API_URL}/api/menu`);
+        const data = await response.json();
+        hideTypingIndicator();
+        
+        if (data.success && data.data.length > 0) {
+          let menuText = '📋 Nuestra Carta:\n\n';
+          data.data.forEach(category => {
+            menuText += `${category.icon} ${category.name}:\n`;
+            category.items.slice(0, 5).forEach(item => {
+              menuText += `   • ${item.name} - ${item.formatted_price}\n`;
+            });
+            if (category.items.length > 5) {
+              menuText += `   ... y ${category.items.length - 5} platos más\n`;
+            }
+            menuText += '\n';
+          });
+          menuText += '¿Querés que te recomiende algo o hacés una reserva? 😊';
+          addMessage('assistant', menuText);
+        } else {
+          addMessage('assistant', 'Por el momento no hay menú disponible. 😊');
+        }
+      } catch (error) {
+        hideTypingIndicator();
+        addMessage('assistant', 'Error al cargar el menú. Intenta de nuevo.');
+      }
     }
   };
 
@@ -346,6 +376,9 @@ export default function ChatBox() {
           <button className="quick-btn primary" onClick={() => handleQuickAction('reservar')}>
             📅 Hacer Reserva
           </button>
+          <button className="quick-btn" onClick={() => handleQuickAction('menu')}>
+            🍽️ Ver Carta
+          </button>
           <button className="quick-btn" onClick={() => handleQuickAction('horarios')}>
             🕐 Horarios
           </button>
@@ -359,6 +392,9 @@ export default function ChatBox() {
         <div className="quick-actions-whatsapp">
           <button className="quick-btn primary" onClick={() => handleQuickAction('reservar')}>
             📅 Nueva Reserva
+          </button>
+          <button className="quick-btn" onClick={() => handleQuickAction('menu')}>
+            🍽️ Ver Carta
           </button>
           <button className="quick-btn" onClick={() => handleQuickAction('horarios')}>
             🕐 Horarios

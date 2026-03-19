@@ -54,6 +54,7 @@ export default function ChatBox() {
   const [showGreeting, setShowGreeting] = useState(false);
   const [model, setModel] = useState('llama-3.1-8b-instant');
   const [isTyping, setIsTyping] = useState(false);
+  const [input, setInput] = useState('');
   const [reservationData, setReservationData] = useState({
     date: '',
     dateDisplay: '',
@@ -146,6 +147,50 @@ export default function ChatBox() {
     setMessages([]);
     resetReservation();
     setIsOpen(false);
+  };
+
+  const handleUserMessage = async (message) => {
+    if (!message.trim()) return;
+    
+    setInput('');
+    addMessage('user', message);
+    showTypingIndicator();
+    
+    await delay(800 + Math.random() * 700);
+    
+    try {
+      const response = await fetch(`${API_URL}/api/chat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          message,
+          model,
+          user_id: user?.id
+        }),
+      });
+
+      const data = await response.json();
+      hideTypingIndicator();
+
+      if (data.error) {
+        addMessage('assistant', `Error: ${data.error}`);
+      } else {
+        addMessage('assistant', data.response);
+        
+        if (data.reservation_created) {
+          resetReservation();
+          addMessage('assistant', '¿Querés hacer algo más? 😊');
+        }
+        
+        if (data.intent === 'make_reservation' && data.ready) {
+          setCurrentStep('confirmar');
+          setShowConfirmation(true);
+        }
+      }
+    } catch (error) {
+      hideTypingIndicator();
+      addMessage('assistant', `Error de conexión: ${error.message}`);
+    }
   };
 
   const handleConfirm = async (confirm) => {
@@ -457,6 +502,32 @@ export default function ChatBox() {
             </button>
             <button className="confirm-btn no" onClick={() => handleConfirm(false)}>
               ❌ Modificar
+            </button>
+          </div>
+        </div>
+      )}
+
+      {currentStep !== 'fecha' && currentStep !== 'hora' && currentStep !== 'personas' && !showConfirmation && (
+        <div className="chat-input-area">
+          <div className="text-input-container">
+            <input
+              type="text"
+              className="text-message-input"
+              placeholder="Escribí tu mensaje..."
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyPress={(e) => {
+                if (e.key === 'Enter' && input.trim()) {
+                  handleUserMessage(input);
+                }
+              }}
+            />
+            <button 
+              className="send-btn"
+              onClick={() => input.trim() && handleUserMessage(input)}
+              disabled={!input.trim() || isTyping}
+            >
+              ➤
             </button>
           </div>
         </div>

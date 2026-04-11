@@ -19,6 +19,7 @@ return new class extends Migration
             $table->foreignId('user_id')->constrained()->onDelete('cascade');
             $table->json('table_ids'); // Array of table IDs
             $table->integer('guest_count');
+            $table->string('status')->default('confirmed');
             $table->timestamps();
         });
     }

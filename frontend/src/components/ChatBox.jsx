@@ -156,12 +156,13 @@ export default function ChatBox() {
     addMessage('user', message);
     showTypingIndicator();
     
-    await delay(800 + Math.random() * 700);
+    const apiUrl = `${API_URL}/api/chat`;
+    console.log('API URL:', apiUrl, 'Message:', message);
     
     try {
-      const response = await fetch(`${API_URL}/api/chat`, {
+      const response = await fetch(apiUrl, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ 
           message,
           model,
@@ -169,7 +170,13 @@ export default function ChatBox() {
         }),
       });
 
-      const data = await response.json();
+      console.log('Response status:', response.status);
+      console.log('Response ok:', response.ok);
+      
+      const textData = await response.text();
+      console.log('Response text:', textData.substring(0, 200));
+      
+      const data = JSON.parse(textData);
       hideTypingIndicator();
 
       if (data.error) {
@@ -189,6 +196,7 @@ export default function ChatBox() {
       }
     } catch (error) {
       hideTypingIndicator();
+      console.error('Chat error:', error);
       addMessage('assistant', `Error de conexión: ${error.message}`);
     }
   };
@@ -266,7 +274,7 @@ export default function ChatBox() {
   };
 
   const handleTimeSelect = (time) => {
-    addMessage('assistant', `🕐 Hora: ${time}\n\n👥 ¿Para cuántas personas?\n(Mínimo 1 - Máximo 8)`);
+    addMessage('assistant', `🕐 Hora: ${time}\n\n👥 ¿Para cuántas personas?\n(Mínimo 1 - Máximo 12)`);
     
     setReservationData(prev => ({ ...prev, time }));
     setCurrentStep('personas');
@@ -478,9 +486,9 @@ export default function ChatBox() {
 
       {currentStep === 'personas' && !showConfirmation && (
         <div className="chat-input-area">
-          <div className="hours-info">Seleccioná cantidad de personas (1-8)</div>
+          <div className="hours-info">Seleccioná cantidad de personas (1-12)</div>
           <div className="options-grid people-grid">
-            {[1, 2, 3, 4, 5, 6, 7, 8].map(n => (
+            {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12].map(n => (
               <button 
                 key={n} 
                 className="option-btn people-btn"

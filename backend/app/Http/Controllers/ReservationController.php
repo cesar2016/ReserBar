@@ -26,6 +26,12 @@ class ReservationController extends Controller
         $carbonTime = Carbon::parse($time);
         $dayOfWeek = $carbonDate->dayOfWeek;
 
+        // Concatenate date and time to check against "now"
+        $reservationDateTime = Carbon::parse("$date $time");
+        if ($reservationDateTime->lt(now()->addMinutes(15))) {
+            return response()->json(['message' => 'Las reservas deben hacerse con al menos 15 minutos de anticipación.'], 400);
+        }
+
         // Check schedule
         if (!$this->checkSchedule($dayOfWeek, $carbonTime)) {
             return response()->json(['message' => 'Está reservando fuera de horario.'], 400);
@@ -35,7 +41,17 @@ class ReservationController extends Controller
         $availableTables = $this->findAvailableTables($date, $time, $guestCount);
 
         if (empty($availableTables)) {
-            return response()->json(['message' => 'No hay mesas disponibles para esa fecha y horario.'], 400);
+            $contextService = app(\App\Services\RestaurantContextService::class);
+            $alternatives = $contextService->getAlternativeSuggestions($date, $time, $guestCount);
+            
+            $msg = 'No hay mesas disponibles para este grupo.';
+            if (!empty($alternatives['option_a'])) $msg .= "\n\n💡 " . $alternatives['option_a'];
+            if (!empty($alternatives['option_b'])) $msg .= "\n\n💡 " . $alternatives['option_b'];
+            
+            return response()->json([
+                'message' => $msg,
+                'alternatives' => $alternatives
+            ], 400);
         }
 
         // Sort tables: A1, A2... B1, B2... (array of arrays)
@@ -69,7 +85,10 @@ class ReservationController extends Controller
         $allTables = Table::all()->toArray();
         
         // 2. Get reservations for this date
-        $reservations = Reservation::where('date', $date)->get();
+        $reservations = Reservation::where('date', $date)
+            ->where(function($q) {
+                $q->whereNull('status')->orWhere('status', '!=', 'cancelled');
+            })->get();
 
         // 3. Identify occupied table IDs for the requested time slot (2 hours)
         $requestedStart = Carbon::parse($time);
@@ -79,12 +98,11 @@ class ReservationController extends Controller
 
         foreach ($reservations as $res) {
             $resStart = Carbon::parse($res->time);
-            $resEnd = $resStart->copy()->addMinutes($res->duration);
+            $resEnd = $resStart->copy()->addMinutes($res->duration ?? 120);
 
             // Check overlap
             if ($requestedStart < $resEnd && $requestedEnd > $resStart) {
-                // If overlap, add all tables of this reservation to occupied list
-                $occupiedTableIds = array_merge($occupiedTableIds, $res->table_ids);
+                $occupiedTableIds = array_merge($occupiedTableIds, (array)$res->table_ids);
             }
         }
         $occupiedTableIds = array_unique($occupiedTableIds);
@@ -94,31 +112,64 @@ class ReservationController extends Controller
             return !in_array($table['id'], $occupiedTableIds);
         });
 
-        // 5. Sorting for Correlative Order: A1, A2, B1...
-        usort($freeTables, function ($a, $b) {
-            if ($a['location'] === $b['location']) {
-                return $a['number'] - $b['number'];
+        // Lexicographical sort: A1, A2, B1...
+        usort($freeTables, function($a, $b) {
+            if ($a['location'] != $b['location']) {
+                return strcmp($a['location'], $b['location']);
             }
-            return strcmp($a['location'], $b['location']);
+            return $a['number'] - $b['number'];
         });
 
-        $selectedTables = [];
-        $currentCapacity = 0;
+        $freeTables = array_values($freeTables);
+        $n = count($freeTables);
+        
+        $bestCombination = [];
+        $minWaste = PHP_INT_MAX;
 
-        foreach ($freeTables as $table) {
-            $selectedTables[] = $table;
-            $currentCapacity += $table['capacity'];
-            
-            if ($currentCapacity >= $guestCount) {
-                break;
+        // Check combinations of 1, 2, and 3 tables
+        // 1 table
+        for ($i = 0; $i < $n; $i++) {
+            $cap = $freeTables[$i]['capacity'];
+            if ($cap >= $guestCount) {
+                $waste = $cap - $guestCount;
+                if ($waste < $minWaste) {
+                    $minWaste = $waste;
+                    $bestCombination = [$freeTables[$i]];
+                }
             }
         }
 
-        if ($currentCapacity < $guestCount) {
-            return []; // Not enough capacity found
+        // 2 tables
+        for ($i = 0; $i < $n; $i++) {
+            for ($j = $i + 1; $j < $n; $j++) {
+                $cap = $freeTables[$i]['capacity'] + $freeTables[$j]['capacity'];
+                if ($cap >= $guestCount) {
+                    $waste = $cap - $guestCount;
+                    if ($waste < $minWaste) {
+                        $minWaste = $waste;
+                        $bestCombination = [$freeTables[$i], $freeTables[$j]];
+                    }
+                }
+            }
         }
 
-        return $selectedTables;
+        // 3 tables
+        for ($i = 0; $i < $n; $i++) {
+            for ($j = $i + 1; $j < $n; $j++) {
+                for ($k = $j + 1; $k < $n; $k++) {
+                    $cap = $freeTables[$i]['capacity'] + $freeTables[$j]['capacity'] + $freeTables[$k]['capacity'];
+                    if ($cap >= $guestCount) {
+                        $waste = $cap - $guestCount;
+                        if ($waste < $minWaste) {
+                            $minWaste = $waste;
+                            $bestCombination = [$freeTables[$i], $freeTables[$j], $freeTables[$k]];
+                        }
+                    }
+                }
+            }
+        }
+
+        return $bestCombination;
     }
 
     public function update(Request $request, Reservation $reservation)

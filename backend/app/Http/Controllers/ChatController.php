@@ -116,8 +116,14 @@ class ChatController extends Controller
             ]);
         }
         
+        $alternativesText = "";
+        if (isset($result['alternatives'])) {
+            if ($result['alternatives']['option_a']) $alternativesText .= "\n\n💡 " . $result['alternatives']['option_a'];
+            if ($result['alternatives']['option_b']) $alternativesText .= "\n\n💡 " . $result['alternatives']['option_b'];
+        }
+
         return response()->json([
-            'response' => "❌ No se pudo crear la reserva.\n\n{$result['message']}\n\n¿Querés intentar con otro horario o fecha?",
+            'response' => "❌ No se pudo crear la reserva.\n\n{$result['message']}{$alternativesText}\n\n¿Querés intentar con otro horario o fecha?",
             'intent' => 'make_reservation',
             'entities' => $context['entities'],
             'session_id' => $sessionId,
@@ -230,7 +236,7 @@ class ChatController extends Controller
         }
         
         if (in_array('guest_count', $missing)) {
-            return ['message' => "👥 ¿Para cuántas personas?\n(Mínimo 1 - Máximo 8)"];
+            return ['message' => "👥 ¿Para cuántas personas?\n(Mínimo 1 - Máximo 12)"];
         }
         
         return ['message' => "¿Querés hacer una reserva? 😊"];
@@ -241,7 +247,7 @@ class ChatController extends Controller
         $messages = [
             'date' => "📅 ¿Para qué fecha? (Ej: 26 de marzo, mañana, próximo viernes)",
             'time' => "🕐 ¿A qué hora? (Ej: 21:00, 9pm)",
-            'guest_count' => "👥 ¿Para cuántas personas? (1 a 8)",
+            'guest_count' => "👥 ¿Para cuántas personas? (1 a 12)",
         ];
         
         return ['message' => $messages[$missing] ?? "Necesito más información."];

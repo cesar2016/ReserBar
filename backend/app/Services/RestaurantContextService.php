@@ -30,7 +30,7 @@ class RestaurantContextService
                 'sabado' => '22:00 - 00:00',
                 'domingo' => '12:00 - 16:00',
             ],
-            'max_guests_per_reservation' => 8,
+            'max_guests_per_reservation' => 12,
         ];
     }
 
@@ -94,11 +94,14 @@ class RestaurantContextService
             $guestCount = (int) $data['guest_count'];
 
             $tableIds = $this->findAvailableTables($date, $time, $guestCount);
+            $userId = $data['user_id'] ?? null;
 
             if (empty($tableIds)) {
+                $alternatives = $this->getAlternativeSuggestions($date, $time, $guestCount);
                 return [
                     'success' => false, 
-                    'message' => 'No hay mesas disponibles para esa fecha y horario.',
+                    'message' => 'No hay disponibilidad suficiente para un grupo de ' . $guestCount . ' personas.',
+                    'alternatives' => $alternatives,
                     'tables' => ''
                 ];
             }
@@ -138,22 +141,79 @@ class RestaurantContextService
 
     private function findAvailableTables(string $date, string $time, int $guestCount): array
     {
-        $allTables = DB::table('tables')
-            ->select('id', 'number', 'capacity', 'location')
-            ->orderBy('location')
-            ->orderBy('number')
-            ->get()
-            ->toArray();
+        $allTables = DB::table('tables')->get()->toArray();
+        $occupiedTableIds = $this->getOccupiedTableIds($date, $time);
 
-        if (empty($allTables)) {
-            return [];
+        $freeTables = array_filter($allTables, function($table) use ($occupiedTableIds) {
+            return !in_array($table->id, $occupiedTableIds);
+        });
+
+        // Lexicographical sort: A1, A2, B1...
+        usort($freeTables, function($a, $b) {
+            if ($a->location != $b->location) {
+                return strcmp($a->location, $b->location);
+            }
+            return $a->number - $b->number;
+        });
+
+        $freeTables = array_values($freeTables);
+        $n = count($freeTables);
+        
+        $bestCombination = [];
+        $minWaste = PHP_INT_MAX;
+
+        // Check combinations of 1, 2, and 3 tables
+        // 1 table
+        for ($i = 0; $i < $n; $i++) {
+            $cap = $freeTables[$i]->capacity;
+            if ($cap >= $guestCount) {
+                $waste = $cap - $guestCount;
+                if ($waste < $minWaste) {
+                    $minWaste = $waste;
+                    $bestCombination = [$freeTables[$i]->id];
+                }
+            }
         }
 
+        // 2 tables
+        for ($i = 0; $i < $n; $i++) {
+            for ($j = $i + 1; $j < $n; $j++) {
+                $cap = $freeTables[$i]->capacity + $freeTables[$j]->capacity;
+                if ($cap >= $guestCount) {
+                    $waste = $cap - $guestCount;
+                    if ($waste < $minWaste) {
+                        $minWaste = $waste;
+                        $bestCombination = [$freeTables[$i]->id, $freeTables[$j]->id];
+                    }
+                }
+            }
+        }
+
+        // 3 tables
+        for ($i = 0; $i < $n; $i++) {
+            for ($j = $i + 1; $j < $n; $j++) {
+                for ($k = $j + 1; $k < $n; $k++) {
+                    $cap = $freeTables[$i]->capacity + $freeTables[$j]->capacity + $freeTables[$k]->capacity;
+                    if ($cap >= $guestCount) {
+                        $waste = $cap - $guestCount;
+                        if ($waste < $minWaste) {
+                            $minWaste = $waste;
+                            $bestCombination = [$freeTables[$i]->id, $freeTables[$j]->id, $freeTables[$k]->id];
+                        }
+                    }
+                }
+            }
+        }
+
+        return $bestCombination;
+    }
+
+    private function getOccupiedTableIds(string $date, string $time): array
+    {
         $reservations = DB::table('reservations')
             ->where('date', $date)
             ->where(function($q) {
-                $q->whereNull('status')
-                  ->orWhere('status', '!=', 'cancelled');
+                $q->whereNull('status')->orWhere('status', '!=', 'cancelled');
             })
             ->get();
 
@@ -161,7 +221,6 @@ class RestaurantContextService
         $requestedEnd = $requestedStart->copy()->addMinutes(120);
 
         $occupiedTableIds = [];
-
         foreach ($reservations as $res) {
             $resStart = Carbon::parse($res->time);
             $resEnd = $resStart->copy()->addMinutes($res->duration ?? 120);
@@ -171,32 +230,54 @@ class RestaurantContextService
                 $occupiedTableIds = array_merge($occupiedTableIds, $tableIds);
             }
         }
+        return array_unique($occupiedTableIds);
+    }
 
-        $occupiedTableIds = array_unique($occupiedTableIds);
+    public function getAlternativeSuggestions(string $date, string $time, int $guestCount): array
+    {
+        $suggestions = [
+            'option_a' => '', 
+            'option_b' => '',
+            'next_slot' => null // { date, time }
+        ];
 
-        $freeTables = array_filter($allTables, function($table) use ($occupiedTableIds) {
-            return !in_array($table->id, $occupiedTableIds);
-        });
+        // Option A: Max capacity at this time
+        $allTables = DB::table('tables')->get()->toArray();
+        $occupiedIds = $this->getOccupiedTableIds($date, $time);
+        $freeTables = array_filter($allTables, function($t) use ($occupiedIds) { return !in_array($t->id, $occupiedIds); });
+        
+        usort($freeTables, fn($a, $b) => $b->capacity - $a->capacity);
+        $maxCapAtTime = array_sum(array_slice(array_column($freeTables, 'capacity'), 0, 3));
+        
+        if ($maxCapAtTime > 0) {
+            $suggestions['option_a'] = "Para este horario, podemos ofrecerte disponibilidad para grupos de hasta $maxCapAtTime personas.";
+        }
 
-        $freeTables = array_values($freeTables);
+        // Option B: Next available slot for the group
+        $current = Carbon::parse("$date $time");
+        $found = false;
+        $todayStr = now()->toDateString();
 
-        $selectedTables = [];
-        $currentCapacity = 0;
-
-        foreach ($freeTables as $table) {
-            $selectedTables[] = $table->id;
-            $currentCapacity += $table->capacity;
+        for ($i = 1; $i < 144; $i++) {
+            $next = $current->copy()->addMinutes($i * 30);
             
-            if ($currentCapacity >= $guestCount) {
+            if ($next->hour < 10 && $next->hour >= 0) continue; 
+
+            $tableIds = $this->findAvailableTables($next->toDateString(), $next->toTimeString(), $guestCount);
+            if (!empty($tableIds)) {
+                $dateLabel = ($next->toDateString() === $todayStr) ? 'Hoy' : $next->format('d/m/Y');
+                $suggestions['option_b'] = "Tendríamos disponibilidad para un grupo de $guestCount $dateLabel a las " . $next->format('H:i') . ".";
+                $suggestions['next_slot'] = [
+                    'date' => $next->toDateString(),
+                    'time' => $next->format('H:i'),
+                    'label' => "$dateLabel a las " . $next->format('H:i')
+                ];
+                $found = true;
                 break;
             }
         }
-
-        if ($currentCapacity < $guestCount) {
-            return [];
-        }
-
-        return $selectedTables;
+        
+        return $suggestions;
     }
 
     private function getTableNames(array $tableIds): string

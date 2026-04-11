@@ -19,15 +19,22 @@ const Dashboard = () => {
     // Reservation Form State
     const [showReservationForm, setShowReservationForm] = useState(false);
     const [editingReservationId, setEditingReservationId] = useState(null);
+    const [suggestion, setSuggestion] = useState(null); // { date, time, label, guest_count }
+    const [errorAlert, setErrorAlert] = useState(null); // { message, alternatives }
     const [resFormData, setResFormData] = useState({ 
         date: new Date().toISOString().split('T')[0], 
-        time: '12:00', 
+        time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false }), 
         guest_count: 2 
     });
 
     // Mesas Tab State
     const [tableViewDate, setTableViewDate] = useState(new Date().toISOString().split('T')[0]);
     const [currentTime, setCurrentTime] = useState(new Date());
+
+    // Admin Availability State
+    const [queryDate, setQueryDate] = useState(new Date().toISOString().split('T')[0]);
+    const [queryTime, setQueryTime] = useState(new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false }));
+    const [availableTablesForQuery, setAvailableTablesForQuery] = useState([]);
 
     // Modal State
     const [showDeleteModal, setShowDeleteModal] = useState(false);
@@ -99,20 +106,35 @@ const Dashboard = () => {
     const isReservationActive = (date, time) => {
         const reservationDate = new Date(`${date}T${time}`);
         const endTime = new Date(reservationDate.getTime() + 2 * 60 * 60 * 1000);
-        return currentTime < endTime;
+        return currentTime >= reservationDate && currentTime < endTime;
     };
 
-    const isTableOccupied = (tableId, date) => {
-        // Check if tableId is in any reservation for the given date AND if that reservation is currently active
+    const isTableOccupiedAt = (tableId, date, time) => {
+        const checkTime = new Date(`${date}T${time}`);
         return reservations.some(res => {
             if (res.date !== date) return false;
             if (!res.table_ids.includes(tableId)) return false;
-            return isReservationActive(res.date, res.time);
+            const resStart = new Date(`${res.date}T${res.time}`);
+            const resEnd = new Date(resStart.getTime() + 2 * 60 * 60 * 1000);
+            return checkTime >= resStart && checkTime < resEnd;
         });
     };
 
     const handleCreateReservation = async (e) => {
         e.preventDefault();
+        
+        const [year, month, day] = resFormData.date.split('-').map(Number);
+        const [hour, minute] = resFormData.time.split(':').map(Number);
+        const selectedDateTime = new Date(year, month - 1, day, hour, minute);
+        
+        const now = new Date();
+        const minTime = new Date(now.getTime() + 15 * 60 * 1000); // Current time + 15 minutes
+        
+        if (selectedDateTime < minTime) {
+            toast.error('Las reservas deben hacerse con al menos 15 minutos de anticipación');
+            return;
+        }
+
         try {
             const token = localStorage.getItem('token');
             
@@ -139,7 +161,50 @@ const Dashboard = () => {
         } catch (error) {
             console.error(error);
             const message = error.response?.data?.message || 'Error al guardar reserva';
-            toast.error(message);
+            
+            if (error.response?.data?.alternatives?.next_slot) {
+                setErrorAlert({
+                    message,
+                    alternatives: error.response.data.alternatives
+                });
+            } else {
+                toast.error(message);
+            }
+        }
+    };
+
+    const handleCloseErrorAlert = () => {
+        if (errorAlert?.alternatives?.next_slot) {
+            setSuggestion({
+                ...errorAlert.alternatives.next_slot,
+                guest_count: resFormData.guest_count
+            });
+        }
+        setErrorAlert(null);
+    };
+
+    const handleConfirmSuggestion = async () => {
+        if (!suggestion) return;
+        
+        try {
+            const token = localStorage.getItem('token');
+            const payload = {
+                date: suggestion.date,
+                time: suggestion.time,
+                guest_count: parseInt(suggestion.guest_count)
+            };
+
+            await axios.post(`${API_URL}/api/reservations`, payload, {
+                headers: { Authorization: `Bearer ${token}` }
+            });
+            
+            toast.success('Reserva confirmada exitosamente');
+            setSuggestion(null);
+            resetForm();
+            fetchData();
+        } catch (error) {
+            console.error(error);
+            toast.error('Error al confirmar sugerencia');
         }
     };
 
@@ -148,7 +213,7 @@ const Dashboard = () => {
         setEditingReservationId(null);
         setResFormData({ 
             date: new Date().toISOString().split('T')[0], 
-            time: '12:00', 
+            time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false }), 
             guest_count: 2 
         });
     };
@@ -237,6 +302,15 @@ const Dashboard = () => {
                     >
                         <ChefHat size={18} /> Carta
                     </button>
+                    {isAdmin && (
+                        <button 
+                            onClick={() => setActiveTab('admin_availability')}
+                            className={`btn ${activeTab === 'admin_availability' ? 'btn-primary' : 'btn-outline'}`}
+                            style={{ borderRadius: '12px', whiteSpace: 'nowrap' }}
+                        >
+                            <Calendar size={18} /> Disponibilidad Admin
+                        </button>
+                    )}
                 </div>
 
                 {loading ? (
@@ -266,7 +340,7 @@ const Dashboard = () => {
 
                                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(250px, 1fr))', gap: '1.5rem' }}>
                                     {tables.map(table => {
-                                        const occupied = isTableOccupied(table.id, tableViewDate);
+                                        const occupied = isTableOccupiedAt(table.id, tableViewDate, currentTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false }));
                                         
                                         // Find the active reservation for this table on this date
                                         let activeReservation = null;
@@ -436,6 +510,81 @@ const Dashboard = () => {
                             </div>
                         )}
 
+                        {/* Admin Availability Tab */}
+                        {activeTab === 'admin_availability' && isAdmin && (
+                            <div>
+                                <h3 style={{ fontSize: '1.25rem', fontWeight: '700', color: '#111827', marginBottom: '1.5rem' }}>Consulta de Disponibilidad</h3>
+                                
+                                <div style={{ 
+                                    background: '#f9fafb', 
+                                    padding: '1.5rem', 
+                                    borderRadius: '16px', 
+                                    display: 'flex', 
+                                    gap: '1rem', 
+                                    flexWrap: 'wrap', 
+                                    alignItems: 'flex-end',
+                                    marginBottom: '2rem',
+                                    border: '1px solid #e5e7eb'
+                                }}>
+                                    <div style={{ flex: '1', minWidth: '200px' }}>
+                                        <label style={{ display: 'block', marginBottom: '0.5rem', fontSize: '0.9rem', fontWeight: '600' }}>Fecha a consultar</label>
+                                        <input 
+                                            type="date" 
+                                            value={queryDate}
+                                            onChange={e => setQueryDate(e.target.value)}
+                                            className="input"
+                                        />
+                                    </div>
+                                    <div style={{ flex: '1', minWidth: '150px' }}>
+                                        <label style={{ display: 'block', marginBottom: '0.5rem', fontSize: '0.9rem', fontWeight: '600' }}>Hora a consultar</label>
+                                        <input 
+                                            type="time" 
+                                            value={queryTime}
+                                            onChange={e => setQueryTime(e.target.value)}
+                                            className="input"
+                                        />
+                                    </div>
+                                    <div style={{ paddingBottom: '5px' }}>
+                                        <p style={{ margin: 0, color: '#6b7280', fontSize: '0.85rem' }}>
+                                            Consultando para el {formatDate(queryDate)} a las {queryTime}
+                                        </p>
+                                    </div>
+                                </div>
+
+                                <div style={{ marginBottom: '1.5rem' }}>
+                                    <h4 style={{ fontSize: '1.1rem', fontWeight: '600', marginBottom: '1rem' }}>Mesas Libres en este horario:</h4>
+                                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: '1rem' }}>
+                                        {tables.filter(table => !isTableOccupiedAt(table.id, queryDate, queryTime)).length > 0 ? (
+                                            tables.filter(table => !isTableOccupiedAt(table.id, queryDate, queryTime)).map(table => (
+                                                <div key={table.id} style={{
+                                                    background: 'white',
+                                                    padding: '1rem',
+                                                    borderRadius: '12px',
+                                                    border: '1px solid #10b981',
+                                                    display: 'flex',
+                                                    alignItems: 'center',
+                                                    gap: '1rem',
+                                                    boxShadow: '0 4px 6px -1px rgba(16, 185, 129, 0.1)'
+                                                }}>
+                                                    <div style={{ background: '#ecfdf5', color: '#10b981', padding: '0.5rem', borderRadius: '8px' }}>
+                                                        <MapPin size={20} />
+                                                    </div>
+                                                    <div>
+                                                        <p style={{ fontWeight: '700', margin: 0 }}>Mesa {table.location}{table.number}</p>
+                                                        <p style={{ margin: 0, fontSize: '0.85rem', color: '#6b7280' }}>Capacidad: {table.capacity}</p>
+                                                    </div>
+                                                </div>
+                                            ))
+                                        ) : (
+                                            <p style={{ gridColumn: '1/-1', textAlign: 'center', padding: '2rem', color: '#ef4444', fontWeight: 'bold' }}>
+                                                ❌ No hay mesas libres para este horario.
+                                            </p>
+                                        )}
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+
                         {/* Reservations Tab */}
                         {activeTab === 'reservations' && (
                             <div>
@@ -452,6 +601,52 @@ const Dashboard = () => {
                                         <Plus size={18} /> {showReservationForm ? 'Cancelar' : 'Nueva Reserva'}
                                     </button>
                                 </div>
+
+                                {errorAlert && (
+                                    <div className="fade-in" style={{
+                                        backgroundColor: '#fef2f2',
+                                        border: '1px solid #fee2e2',
+                                        borderRadius: '16px',
+                                        padding: '1.5rem',
+                                        marginBottom: '1.5rem',
+                                        position: 'relative',
+                                        display: 'flex',
+                                        gap: '1rem',
+                                        alignItems: 'flex-start'
+                                    }}>
+                                        <div style={{ padding: '0.5rem', background: '#fee2e2', borderRadius: '50%', color: '#ef4444' }}>
+                                            <X size={20} fontWeight="bold" />
+                                        </div>
+                                        <div style={{ flex: 1 }}>
+                                            <p style={{ 
+                                                color: '#b91c1c', 
+                                                margin: 0, 
+                                                fontWeight: '600', 
+                                                lineHeight: '1.6',
+                                                whiteSpace: 'pre-line' 
+                                            }}>
+                                                {errorAlert.message}
+                                            </p>
+                                        </div>
+                                        <button 
+                                            onClick={handleCloseErrorAlert}
+                                            style={{
+                                                background: 'none',
+                                                border: 'none',
+                                                color: '#b91c1c',
+                                                cursor: 'pointer',
+                                                padding: '0.25rem',
+                                                display: 'flex',
+                                                alignItems: 'center',
+                                                justifyContent: 'center',
+                                                borderRadius: '6px'
+                                            }}
+                                            className="hover-bg-red"
+                                        >
+                                            <X size={20} />
+                                        </button>
+                                    </div>
+                                )}
 
                                 {showReservationForm && (
                                     <form 
@@ -623,6 +818,72 @@ const Dashboard = () => {
                     </div>
                 )}
             </main>
+
+            {/* Modals and Overlays */}
+            {suggestion && (
+                <div style={{
+                    position: 'fixed',
+                    top: 0, left: 0, right: 0, bottom: 0,
+                    backgroundColor: 'rgba(0,0,0,0.5)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    zIndex: 1000,
+                    backdropFilter: 'blur(4px)'
+                }}>
+                    <div className="glass-panel" style={{
+                        backgroundColor: 'white',
+                        padding: '2.5rem',
+                        borderRadius: '24px',
+                        maxWidth: '450px',
+                        width: '90%',
+                        textAlign: 'center',
+                        boxShadow: '0 25px 50px -12px rgba(0,0,0,0.25)',
+                        border: '1px solid rgba(79, 70, 229, 0.2)'
+                    }}>
+                        <div style={{ 
+                            fontSize: '3.5rem', 
+                            marginBottom: '1rem'
+                        }}>📅</div>
+                        <h3 style={{ fontSize: '1.5rem', fontWeight: '800', marginBottom: '1rem', color: '#111827' }}>
+                            ¡Tenemos un lugar para vos!
+                        </h3>
+                        <p style={{ color: '#4b5563', marginBottom: '2rem', fontSize: '1.1rem', lineHeight: '1.6' }}>
+                            ¿Deseas confirmar este horario? <br/>
+                            <strong style={{ color: '#4f46e5', fontSize: '1.2rem' }}>{suggestion.label}</strong> <br/>
+                            para <strong style={{ color: '#111827' }}>{suggestion.guest_count} personas</strong>.
+                        </p>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                            <button 
+                                onClick={handleConfirmSuggestion}
+                                className="btn btn-primary"
+                                style={{
+                                    padding: '1rem',
+                                    borderRadius: '14px',
+                                    fontSize: '1rem',
+                                    fontWeight: '700',
+                                    boxShadow: '0 10px 15px -3px rgba(79, 70, 229, 0.4)'
+                                }}
+                            >
+                                ✅ Sí, deseo confirmar este horario
+                            </button>
+                            <button 
+                                onClick={() => setSuggestion(null)}
+                                className="btn btn-outline"
+                                style={{
+                                    padding: '1rem',
+                                    borderRadius: '14px',
+                                    fontSize: '1rem',
+                                    color: '#6b7280',
+                                    border: '1px solid #e5e7eb'
+                                }}
+                            >
+                                No por ahora
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
 
             {/* Delete Confirmation Modal */}
             {showDeleteModal && (
